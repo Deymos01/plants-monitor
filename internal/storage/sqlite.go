@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"plants-monitor/internal/models"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -71,5 +72,80 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) InsertMeasurement(ctx context.Context, input models.CreateMeasurementRequest) (models.Measurement, error) {
-	return models.Measurement{}, nil
+	query := `
+		INSERT INTO measurements (
+			device_id,
+			soil_raw,
+			soil_voltage,
+			soil_percent,
+			light_raw,
+			light_voltage,
+			battery_voltage
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		RETURNING
+			id,
+			device_id,
+			soil_raw,
+			soil_voltage,
+			soil_percent,
+			light_raw,
+			light_voltage,
+			battery_voltage,
+			created_at;
+`
+
+	var m models.Measurement
+	var createdAt string
+
+	err := s.db.QueryRowContext(
+		ctx,
+		query,
+		input.DeviceID,
+		input.SoilRaw,
+		input.SoilVoltage,
+		input.SoilPercent,
+		input.LightRaw,
+		input.LightVoltage,
+		input.BatteryVoltage,
+	).Scan(
+		&m.ID,
+		&m.DeviceID,
+		&m.SoilRaw,
+		&m.SoilVoltage,
+		&m.SoilPercent,
+		&m.LightRaw,
+		&m.LightVoltage,
+		&m.BatteryVoltage,
+		&createdAt,
+	)
+
+	if err != nil {
+		return models.Measurement{}, fmt.Errorf("insert measurement: %w", err)
+	}
+
+	t, err := parseSQLiteTime(createdAt)
+	if err != nil {
+		return models.Measurement{}, err
+	}
+
+	m.CreatedAt = t
+	return m, nil
+}
+
+func parseSQLiteTime(value string) (time.Time, error) {
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, value)
+		if err == nil {
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("parse sqlite time %q", value)
 }
