@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"plants-monitor/internal/config"
 	"plants-monitor/internal/httpapi"
 	"plants-monitor/internal/storage"
+	"syscall"
 	"time"
 )
 
@@ -31,9 +35,27 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("server listening on %s", cfg.HTTPAddr)
+	go func() {
+		log.Printf("server listening on %s", cfg.HTTPAddr)
 
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("listen and serve: %v", err)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("listen and serve: %v", err)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	<-stop
+
+	log.Println("shutdown signal received")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("server shutdown error: %v", err)
 	}
+
+	log.Println("server stopped")
 }
