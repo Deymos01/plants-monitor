@@ -8,8 +8,9 @@ import (
 )
 
 type Config struct {
-	HTTPAddr string
-	DBPath   string
+	HTTPAddr         string
+	DBPath           string
+	TelegramBotToken string
 }
 
 func Load() (Config, error) {
@@ -27,9 +28,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	telegramBotToken, err := requiredEnv("TELEGRAM_BOT_TOKEN")
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		HTTPAddr: httpAddr,
-		DBPath:   dbPath,
+		HTTPAddr:         httpAddr,
+		DBPath:           dbPath,
+		TelegramBotToken: telegramBotToken,
 	}, nil
 }
 

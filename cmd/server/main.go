@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"plants-monitor/internal/bot"
 	"plants-monitor/internal/config"
 	"plants-monitor/internal/httpapi"
 	"plants-monitor/internal/storage"
@@ -25,6 +26,9 @@ func main() {
 		log.Fatalf("open storage: %v", err)
 	}
 	defer db.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	handler := httpapi.NewHandler(db)
 	router := httpapi.NewRouter(handler)
@@ -46,17 +50,23 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	botService := bot.NewService(db)
 
-	<-stop
+	go func() {
+		if err := botService.Start(ctx, cfg.TelegramBotToken); err != nil {
+			log.Printf("telegram bot error: %v", err)
+			stop()
+		}
+	}()
+
+	<-ctx.Done()
 
 	log.Println("shutdown signal received")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
 	}
 

@@ -49,6 +49,15 @@ func (s *Store) Close() error {
 
 func (s *Store) migrate(ctx context.Context) error {
 	query := `
+		CREATE TABLE IF NOT EXISTS devices (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL UNIQUE,
+			token_hash TEXT NOT NULL,
+			plant_name TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			last_seen_at DATETIME NULL
+		);
+
 		CREATE TABLE IF NOT EXISTS measurements (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			device_id TEXT NOT NULL,
@@ -70,14 +79,25 @@ func (s *Store) migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_measurements_device_created
 		ON measurements(device_id, created_at DESC);
 
-		CREATE TABLE IF NOT EXISTS devices (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			device_id TEXT NOT NULL UNIQUE,
-			token_hash TEXT NOT NULL,
-			plant_name TEXT NOT NULL DEFAULT '',
+		CREATE TABLE IF NOT EXISTS telegram_users (
+			chat_id INTEGER PRIMARY KEY,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			last_seen_at DATETIME NULL
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
+
+		CREATE TABLE IF NOT EXISTS device_subscriptions (
+			chat_id INTEGER NOT NULL,
+			device_id TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		
+			PRIMARY KEY (chat_id, device_id),
+		
+			FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id),
+			FOREIGN KEY (device_id) REFERENCES devices(device_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_device_subscriptions_chat
+		ON device_subscriptions(chat_id);
 `
 
 	if _, err := s.db.ExecContext(ctx, query); err != nil {
@@ -152,18 +172,20 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.Measurement, error) {
 	query := `
 		SELECT
-			id,
-			device_id,
+			m.id,
+			m.device_id,
+			d.plant_name,
 			soil_raw,
 			soil_voltage,
 			soil_percent,
 			light_raw,
 			light_voltage,
 			battery_voltage,
-			created_at
-		FROM measurements
-		WHERE device_id = ?
-		ORDER BY created_at DESC, id DESC
+			m.created_at
+		FROM measurements m
+			JOIN devices d ON m.device_id = d.device_id
+		WHERE m.device_id = ?
+		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT 1;
 `
 
@@ -173,6 +195,7 @@ func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.
 	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(
 		&m.ID,
 		&m.DeviceID,
+		&m.PlantName,
 		&m.SoilRaw,
 		&m.SoilVoltage,
 		&m.SoilPercent,
@@ -281,6 +304,85 @@ func (s *Store) TouchDevice(ctx context.Context, deviceID string) error {
 	}
 
 	return nil
+}
+
+func (s *Store) UpsertTelegramUser(ctx context.Context, chatID int64) error {
+	query := `
+		INSERT INTO telegram_users (
+			chat_id
+		)
+		VALUES (?)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			updated_at = CURRENT_TIMESTAMP;
+`
+
+	if _, err := s.db.ExecContext(ctx, query, chatID); err != nil {
+		return fmt.Errorf("upsert telegram user: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) SubscribeDevice(ctx context.Context, chatID int64, deviceID string) error {
+	query := `
+		INSERT INTO device_subscriptions (
+			chat_id,
+			device_id
+		)
+		VALUES (?, ?)
+		ON CONFLICT(chat_id, device_id) DO NOTHING;
+`
+
+	if _, err := s.db.ExecContext(ctx, query, chatID, deviceID); err != nil {
+		return fmt.Errorf("subscribe device: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) LatestSubscribedDeviceID(ctx context.Context, chatID int64) (string, error) {
+	query := `
+		SELECT device_id
+		FROM device_subscriptions
+		WHERE chat_id = ?
+		ORDER BY created_at DESC
+		LIMIT 1;
+`
+
+	var deviceID string
+
+	err := s.db.QueryRowContext(ctx, query, chatID).Scan(&deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.ErrNoRows
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("latest subscribed device id: %w", err)
+	}
+
+	return deviceID, nil
+}
+
+func (s *Store) DeviceExists(ctx context.Context, deviceID string) (bool, error) {
+	query := `
+		SELECT 1
+		FROM devices
+		WHERE device_id = ?
+		LIMIT 1;
+`
+
+	var exists int
+
+	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("device exists: %w", err)
+	}
+
+	return true, nil
 }
 
 func parseSQLiteTime(value string) (time.Time, error) {
