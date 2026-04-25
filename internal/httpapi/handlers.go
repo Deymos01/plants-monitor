@@ -33,6 +33,17 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	deviceID := r.Header.Get("X-Device-ID")
+	deviceToken := r.Header.Get("X-Device-Token")
+
+	if err := h.store.AuthenticateDevice(r.Context(), deviceID, deviceToken); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"error":   "unauthorized_device",
+			"details": err.Error(),
+		})
+		return
+	}
+
 	defer r.Body.Close()
 
 	var input models.CreateMeasurementRequest
@@ -56,7 +67,7 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	measurement, err := h.store.InsertMeasurement(r.Context(), input)
+	measurement, err := h.store.InsertMeasurement(r.Context(), deviceID, input)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error":   "insert_failed",
@@ -65,9 +76,18 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.store.TouchDevice(r.Context(), deviceID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "touch_device_failed",
+			"details": err.Error(),
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"ok":          true,
-		"measurement": measurement,
+		"ok":                 true,
+		"measurement":        measurement,
+		"next_sleep_seconds": 7200,
 	})
 }
 
@@ -109,11 +129,50 @@ func (h *Handler) LatestMeasurement(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func validateMeasurement(input models.CreateMeasurementRequest) error {
-	if input.DeviceID == "" {
-		return errors.New("device_id is required")
+func (h *Handler) CreateDevice(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"error": "method_not_allowed",
+		})
+		return
 	}
 
+	defer r.Body.Close()
+
+	var input models.CreateDeviceRequest
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "invalid_json",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if input.DeviceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "validation_error",
+			"details": "device_id is required",
+		})
+		return
+	}
+
+	response, err := h.store.CreateDevice(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "create_device_failed",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func validateMeasurement(input models.CreateMeasurementRequest) error {
 	if input.SoilPercent < 0 || input.SoilPercent > 100 {
 		return errors.New("soil_percent must be between 0 and 100")
 	}

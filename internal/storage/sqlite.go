@@ -2,7 +2,11 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -58,11 +62,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		
 			battery_voltage REAL NULL,
 		
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+			FOREIGN KEY (device_id) REFERENCES devices(device_id)
 		);
 		
 		CREATE INDEX IF NOT EXISTS idx_measurements_device_created
 		ON measurements(device_id, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS devices (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL UNIQUE,
+			token_hash TEXT NOT NULL,
+			plant_name TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			last_seen_at DATETIME NULL
+		);
 `
 
 	if _, err := s.db.ExecContext(ctx, query); err != nil {
@@ -72,7 +87,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) InsertMeasurement(ctx context.Context, input models.CreateMeasurementRequest) (models.Measurement, error) {
+func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input models.CreateMeasurementRequest) (models.Measurement, error) {
 	query := `
 		INSERT INTO measurements (
 			device_id,
@@ -102,7 +117,7 @@ func (s *Store) InsertMeasurement(ctx context.Context, input models.CreateMeasur
 	err := s.db.QueryRowContext(
 		ctx,
 		query,
-		input.DeviceID,
+		deviceID,
 		input.SoilRaw,
 		input.SoilVoltage,
 		input.SoilPercent,
@@ -184,6 +199,90 @@ func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.
 	return m, nil
 }
 
+func (s *Store) CreateDevice(ctx context.Context, input models.CreateDeviceRequest) (models.CreateDeviceResponse, error) {
+	token, err := GenerateDeviceToken()
+	if err != nil {
+		return models.CreateDeviceResponse{}, err
+	}
+
+	tokenHash := HashDeviceToken(token)
+
+	query := `
+		INSERT INTO devices (
+			device_id,
+			token_hash,
+			plant_name
+		)
+		VALUES (?, ?, ?);
+`
+
+	_, err = s.db.ExecContext(
+		ctx,
+		query,
+		input.DeviceID,
+		tokenHash,
+		input.PlantName,
+	)
+	if err != nil {
+		return models.CreateDeviceResponse{}, fmt.Errorf("create device: %w", err)
+	}
+
+	return models.CreateDeviceResponse{
+		OK:          true,
+		DeviceID:    input.DeviceID,
+		PlantName:   input.PlantName,
+		DeviceToken: token,
+	}, nil
+}
+
+func (s *Store) AuthenticateDevice(ctx context.Context, deviceID string, token string) error {
+	if deviceID == "" {
+		return errors.New("missing device id")
+	}
+
+	if token == "" {
+		return errors.New("missing device token")
+	}
+
+	query := `
+		SELECT token_hash
+		FROM devices
+		WHERE device_id = ?
+		LIMIT 1;
+`
+
+	var tokenHash string
+
+	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(&tokenHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("device not found")
+	}
+
+	if err != nil {
+		return fmt.Errorf("load device: %w", err)
+	}
+
+	if !CompareTokenHash(token, tokenHash) {
+		return errors.New("invalid device token")
+	}
+
+	return nil
+}
+
+func (s *Store) TouchDevice(ctx context.Context, deviceID string) error {
+	query := `
+		UPDATE devices
+		SET last_seen_at = CURRENT_TIMESTAMP
+		WHERE device_id = ?;
+`
+
+	if _, err := s.db.ExecContext(ctx, query, deviceID); err != nil {
+		return fmt.Errorf("touch device: %w", err)
+	}
+
+	return nil
+}
+
 func parseSQLiteTime(value string) (time.Time, error) {
 	layouts := []string{
 		"2006-01-02 15:04:05",
@@ -199,4 +298,35 @@ func parseSQLiteTime(value string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("parse sqlite time %q", value)
+}
+
+func GenerateDeviceToken() (string, error) {
+	bytes := make([]byte, 32)
+
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+
+	return "pmon_" + hex.EncodeToString(bytes), nil
+}
+
+func HashDeviceToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func CompareTokenHash(token string, expectedHash string) bool {
+	actualHash := HashDeviceToken(token)
+
+	actualBytes, err := hex.DecodeString(actualHash)
+	if err != nil {
+		return false
+	}
+
+	expectedBytes, err := hex.DecodeString(expectedHash)
+	if err != nil {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare(actualBytes, expectedBytes) == 1
 }

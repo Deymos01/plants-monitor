@@ -15,7 +15,6 @@ type Measurement struct {
 }
 
 type CreateMeasurementRequest struct {
-	DeviceID       string   `json:"device_id"`
 	SoilRaw        float64  `json:"soil_raw"`
 	SoilVoltage    float64  `json:"soil_voltage"`
 	SoilPercent    int      `json:"soil_percent"`
