@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"plants-monitor/internal/alerts"
+	"plants-monitor/internal/bot"
 	"plants-monitor/internal/config"
 	"plants-monitor/internal/httpapi"
+	"plants-monitor/internal/logger"
 	"plants-monitor/internal/storage"
 	"syscall"
 	"time"
@@ -20,14 +24,39 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
+	logg := logger.New(cfg.AppEnv)
+
+	logg.Info(
+		"config loaded",
+		slog.String("app_env", cfg.AppEnv),
+		slog.String("http_addr", cfg.HTTPAddr),
+		slog.String("db_path", cfg.DBPath),
+		slog.Int("soil_low_percent", cfg.SoilLowPercent),
+		slog.Float64("light_low_voltage", cfg.LightLowVoltage),
+	)
+
 	db, err := storage.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatalf("open storage: %v", err)
+		logg.Error("open storage failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 	defer db.Close()
 
-	handler := httpapi.NewHandler(db)
-	router := httpapi.NewRouter(handler)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	botService := bot.NewService(db, logg)
+
+	alertEngine := alerts.NewEngine(
+		db,
+		botService,
+		cfg.SoilLowPercent,
+		cfg.LightLowVoltage,
+		logg,
+	)
+
+	handler := httpapi.NewHandler(db, alertEngine, logg)
+	router := httpapi.NewRouter(handler, logg)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -46,17 +75,21 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		if err := botService.Start(ctx, cfg.TelegramBotToken); err != nil {
+			log.Printf("telegram bot error: %v", err)
+			stop()
+		}
+	}()
 
-	<-stop
+	<-ctx.Done()
 
 	log.Println("shutdown signal received")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
 	}
 

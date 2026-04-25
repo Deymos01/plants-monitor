@@ -49,6 +49,15 @@ func (s *Store) Close() error {
 
 func (s *Store) migrate(ctx context.Context) error {
 	query := `
+		CREATE TABLE IF NOT EXISTS devices (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL UNIQUE,
+			token_hash TEXT NOT NULL,
+			plant_name TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			last_seen_at DATETIME NULL
+		);
+
 		CREATE TABLE IF NOT EXISTS measurements (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			device_id TEXT NOT NULL,
@@ -70,14 +79,40 @@ func (s *Store) migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_measurements_device_created
 		ON measurements(device_id, created_at DESC);
 
-		CREATE TABLE IF NOT EXISTS devices (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			device_id TEXT NOT NULL UNIQUE,
-			token_hash TEXT NOT NULL,
-			plant_name TEXT NOT NULL DEFAULT '',
+		CREATE TABLE IF NOT EXISTS telegram_users (
+			chat_id INTEGER PRIMARY KEY,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			last_seen_at DATETIME NULL
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
+
+		CREATE TABLE IF NOT EXISTS device_subscriptions (
+			chat_id INTEGER NOT NULL,
+			device_id TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		
+			PRIMARY KEY (chat_id, device_id),
+		
+			FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id),
+			FOREIGN KEY (device_id) REFERENCES devices(device_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_device_subscriptions_chat
+		ON device_subscriptions(chat_id);
+
+		CREATE TABLE IF NOT EXISTS alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL,
+			type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			message TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			resolved_at DATETIME NULL,
+		
+			FOREIGN KEY (device_id) REFERENCES devices(device_id)
+		);
+		
+		CREATE INDEX IF NOT EXISTS idx_alerts_device_type_status
+		ON alerts(device_id, type, status);
 `
 
 	if _, err := s.db.ExecContext(ctx, query); err != nil {
@@ -99,20 +134,10 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 			battery_voltage
 		)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-		RETURNING
-			id,
-			device_id,
-			soil_raw,
-			soil_voltage,
-			soil_percent,
-			light_raw,
-			light_voltage,
-			battery_voltage,
-			created_at;
+		RETURNING id;
 `
 
-	var m models.Measurement
-	var createdAt string
+	var measurementID int64
 
 	err := s.db.QueryRowContext(
 		ctx,
@@ -124,9 +149,46 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 		input.LightRaw,
 		input.LightVoltage,
 		input.BatteryVoltage,
-	).Scan(
+	).Scan(&measurementID)
+
+	if err != nil {
+		return models.Measurement{}, fmt.Errorf("insert measurement: %w", err)
+	}
+
+	measurement, err := s.MeasurementByID(ctx, measurementID)
+	if err != nil {
+		return models.Measurement{}, err
+	}
+
+	return measurement, nil
+}
+
+func (s *Store) MeasurementByID(ctx context.Context, measurementID int64) (models.Measurement, error) {
+	query := `
+		SELECT
+			m.id,
+			m.device_id,
+			d.plant_name,
+			m.soil_raw,
+			m.soil_voltage,
+			m.soil_percent,
+			m.light_raw,
+			m.light_voltage,
+			m.battery_voltage,
+			m.created_at
+		FROM measurements m
+		JOIN devices d ON d.device_id = m.device_id
+		WHERE m.id = ?
+		LIMIT 1;
+`
+
+	var m models.Measurement
+	var createdAt string
+
+	err := s.db.QueryRowContext(ctx, query, measurementID).Scan(
 		&m.ID,
 		&m.DeviceID,
+		&m.PlantName,
 		&m.SoilRaw,
 		&m.SoilVoltage,
 		&m.SoilPercent,
@@ -136,8 +198,12 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 		&createdAt,
 	)
 
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.Measurement{}, sql.ErrNoRows
+	}
+
 	if err != nil {
-		return models.Measurement{}, fmt.Errorf("insert measurement: %w", err)
+		return models.Measurement{}, fmt.Errorf("measurement by id: %w", err)
 	}
 
 	t, err := parseSQLiteTime(createdAt)
@@ -152,18 +218,20 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.Measurement, error) {
 	query := `
 		SELECT
-			id,
-			device_id,
-			soil_raw,
-			soil_voltage,
-			soil_percent,
-			light_raw,
-			light_voltage,
-			battery_voltage,
-			created_at
-		FROM measurements
-		WHERE device_id = ?
-		ORDER BY created_at DESC, id DESC
+			m.id,
+			m.device_id,
+			d.plant_name,
+			m.soil_raw,
+			m.soil_voltage,
+			m.soil_percent,
+			m.light_raw,
+			m.light_voltage,
+			m.battery_voltage,
+			m.created_at
+		FROM measurements m
+		JOIN devices d ON d.device_id = m.device_id
+		WHERE m.device_id = ?
+		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT 1;
 `
 
@@ -173,6 +241,7 @@ func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.
 	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(
 		&m.ID,
 		&m.DeviceID,
+		&m.PlantName,
 		&m.SoilRaw,
 		&m.SoilVoltage,
 		&m.SoilPercent,
@@ -281,6 +350,203 @@ func (s *Store) TouchDevice(ctx context.Context, deviceID string) error {
 	}
 
 	return nil
+}
+
+func (s *Store) UpsertTelegramUser(ctx context.Context, chatID int64) error {
+	query := `
+		INSERT INTO telegram_users (
+			chat_id
+		)
+		VALUES (?)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			updated_at = CURRENT_TIMESTAMP;
+`
+
+	if _, err := s.db.ExecContext(ctx, query, chatID); err != nil {
+		return fmt.Errorf("upsert telegram user: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) SubscribeDevice(ctx context.Context, chatID int64, deviceID string) error {
+	query := `
+		INSERT INTO device_subscriptions (
+			chat_id,
+			device_id
+		)
+		VALUES (?, ?)
+		ON CONFLICT(chat_id, device_id) DO NOTHING;
+`
+
+	if _, err := s.db.ExecContext(ctx, query, chatID, deviceID); err != nil {
+		return fmt.Errorf("subscribe device: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) LatestSubscribedDeviceID(ctx context.Context, chatID int64) (string, error) {
+	query := `
+		SELECT device_id
+		FROM device_subscriptions
+		WHERE chat_id = ?
+		ORDER BY created_at DESC
+		LIMIT 1;
+`
+
+	var deviceID string
+
+	err := s.db.QueryRowContext(ctx, query, chatID).Scan(&deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.ErrNoRows
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("latest subscribed device id: %w", err)
+	}
+
+	return deviceID, nil
+}
+
+func (s *Store) DeviceExists(ctx context.Context, deviceID string) (bool, error) {
+	query := `
+		SELECT 1
+		FROM devices
+		WHERE device_id = ?
+		LIMIT 1;
+`
+
+	var exists int
+
+	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("device exists: %w", err)
+	}
+
+	return true, nil
+}
+
+func (s *Store) ActiveAlertExists(ctx context.Context, deviceID string, alertType models.AlertType) (bool, error) {
+	query := `
+		SELECT 1
+		FROM alerts
+		WHERE device_id = ?
+		  AND type = ?
+		  AND status = ?
+		LIMIT 1;
+`
+
+	var exists int
+
+	err := s.db.QueryRowContext(
+		ctx,
+		query,
+		deviceID,
+		string(alertType),
+		string(models.AlertStatusActive),
+	).Scan(&exists)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("active alert exists: %w", err)
+	}
+
+	return true, nil
+}
+
+func (s *Store) CreateAlert(ctx context.Context, deviceID string, alertType models.AlertType, message string) error {
+	query := `
+		INSERT INTO alerts (
+			device_id,
+			type,
+			status,
+			message
+		)
+		VALUES (?, ?, ?, ?);
+`
+
+	if _, err := s.db.ExecContext(
+		ctx,
+		query,
+		deviceID,
+		string(alertType),
+		string(models.AlertStatusActive),
+		message,
+	); err != nil {
+		return fmt.Errorf("create alert: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) ResolveAlert(ctx context.Context, deviceID string, alertType models.AlertType) (bool, error) {
+	query := `
+		UPDATE alerts
+		SET status = ?,
+			resolved_at = CURRENT_TIMESTAMP
+		WHERE device_id = ?
+		  AND type = ?
+		  AND status = ?;
+`
+
+	result, err := s.db.ExecContext(
+		ctx,
+		query,
+		string(models.AlertStatusResolved),
+		deviceID,
+		string(alertType),
+		string(models.AlertStatusActive),
+	)
+	if err != nil {
+		return false, fmt.Errorf("resolve alert: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("resolve alert rows affected: %w", err)
+	}
+
+	return affected > 0, nil
+}
+
+func (s *Store) DeviceSubscriberChatIDs(ctx context.Context, deviceID string) ([]int64, error) {
+	query := `
+		SELECT chat_id
+		FROM device_subscriptions
+		WHERE device_id = ?;
+`
+
+	rows, err := s.db.QueryContext(ctx, query, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("query device subscribers: %w", err)
+	}
+	defer rows.Close()
+
+	var chatIDs []int64
+
+	for rows.Next() {
+		var chatID int64
+
+		if err := rows.Scan(&chatID); err != nil {
+			return nil, fmt.Errorf("scan device subscriber: %w", err)
+		}
+
+		chatIDs = append(chatIDs, chatID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate device subscribers: %w", err)
+	}
+
+	return chatIDs, nil
 }
 
 func parseSQLiteTime(value string) (time.Time, error) {

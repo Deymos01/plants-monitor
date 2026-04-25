@@ -1,8 +1,11 @@
 package httpapi
 
-import "net/http"
+import (
+	"log/slog"
+	"net/http"
+)
 
-func NewRouter(handler *Handler) http.Handler {
+func NewRouter(handler *Handler, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.Health)
@@ -12,5 +15,5 @@ func NewRouter(handler *Handler) http.Handler {
 	mux.HandleFunc("POST /api/v1/measurements", handler.CreateMeasurement)
 	mux.HandleFunc("GET /api/v1/measurements/latest", handler.LatestMeasurement)
 
-	return mux
+	return LoggingMiddleware(log)(mux)
 }

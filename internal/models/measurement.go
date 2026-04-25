@@ -5,6 +5,7 @@ import "time"
 type Measurement struct {
 	ID             int64     `json:"id"`
 	DeviceID       string    `json:"device_id"`
+	PlantName      string    `json:"plant_name"`
 	SoilRaw        float64   `json:"soil_raw"`
 	SoilVoltage    float64   `json:"soil_voltage"`
 	SoilPercent    int       `json:"soil_percent"`
