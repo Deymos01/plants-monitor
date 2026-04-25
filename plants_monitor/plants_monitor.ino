@@ -101,10 +101,7 @@ String buildMeasurementJSON(const SensorData& data) {
   json += "\"soil_percent\":" + String(data.soilPercent) + ",";
 
   json += "\"light_raw\":" + String(data.ldr.raw, 1) + ",";
-  json += "\"light_voltage\":" + String(data.ldr.voltage, 3) + ",";
-
-  json += "\"rssi\":" + String(WiFi.RSSI());
-
+  json += "\"light_voltage\":" + String(data.ldr.voltage, 3);
   json += "}";
 
   return json;
