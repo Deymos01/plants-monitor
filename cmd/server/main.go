@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"plants-monitor/internal/bot"
 	"plants-monitor/internal/config"
 	"plants-monitor/internal/httpapi"
+	"plants-monitor/internal/logger"
 	"plants-monitor/internal/storage"
 	"syscall"
 	"time"
@@ -22,26 +24,39 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
+	logg := logger.New(cfg.AppEnv)
+
+	logg.Info(
+		"config loaded",
+		slog.String("app_env", cfg.AppEnv),
+		slog.String("http_addr", cfg.HTTPAddr),
+		slog.String("db_path", cfg.DBPath),
+		slog.Int("soil_low_percent", cfg.SoilLowPercent),
+		slog.Float64("light_low_voltage", cfg.LightLowVoltage),
+	)
+
 	db, err := storage.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatalf("open storage: %v", err)
+		logg.Error("open storage failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 	defer db.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	botService := bot.NewService(db)
+	botService := bot.NewService(db, logg)
 
 	alertEngine := alerts.NewEngine(
 		db,
 		botService,
 		cfg.SoilLowPercent,
 		cfg.LightLowVoltage,
+		logg,
 	)
 
-	handler := httpapi.NewHandler(db, alertEngine)
-	router := httpapi.NewRouter(handler)
+	handler := httpapi.NewHandler(db, alertEngine, logg)
+	router := httpapi.NewRouter(handler, logg)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

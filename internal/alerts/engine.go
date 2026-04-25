@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"plants-monitor/internal/models"
 	"plants-monitor/internal/storage"
 )
@@ -17,6 +18,7 @@ type Engine struct {
 	notifier        Notifier
 	soilLowPercent  int
 	lightLowVoltage float64
+	log             *slog.Logger
 }
 
 func NewEngine(
@@ -24,12 +26,14 @@ func NewEngine(
 	notifier Notifier,
 	soilLowPercent int,
 	lightLowVoltage float64,
+	log *slog.Logger,
 ) *Engine {
 	return &Engine{
 		store:           store,
 		notifier:        notifier,
 		soilLowPercent:  soilLowPercent,
 		lightLowVoltage: lightLowVoltage,
+		log:             log,
 	}
 }
 
@@ -68,6 +72,13 @@ func (e *Engine) processSoilLow(ctx context.Context, m models.Measurement) {
 			m.SoilPercent,
 		)
 
+		e.log.InfoContext(
+			ctx,
+			"alert resolved",
+			slog.String("device_id", m.DeviceID),
+			slog.String("alert_type", string(models.AlertTypeSoilLow)),
+		)
+
 		e.notifySubscribers(ctx, m.DeviceID, message)
 	}
 }
@@ -102,6 +113,13 @@ func (e *Engine) processLightLow(ctx context.Context, m models.Measurement) {
 			m.LightVoltage,
 		)
 
+		e.log.InfoContext(
+			ctx,
+			"alert resolved",
+			slog.String("device_id", m.DeviceID),
+			slog.String("alert_type", string(models.AlertTypeLightLow)),
+		)
+
 		e.notifySubscribers(ctx, m.DeviceID, message)
 	}
 }
@@ -114,13 +132,32 @@ func (e *Engine) createAndNotifyIfNew(ctx context.Context, deviceID string, aler
 	}
 
 	if exists {
+		e.log.InfoContext(
+			ctx,
+			"alert already active, skip notification",
+			slog.String("device_id", deviceID),
+			slog.String("alert_type", string(alertType)),
+		)
 		return
 	}
 
 	if err := e.store.CreateAlert(ctx, deviceID, alertType, message); err != nil {
-		log.Printf("create alert: %v", err)
+		e.log.ErrorContext(
+			ctx,
+			"create alert failed",
+			slog.String("device_id", deviceID),
+			slog.String("alert_type", string(alertType)),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
+
+	e.log.WarnContext(
+		ctx,
+		"alert created",
+		slog.String("device_id", deviceID),
+		slog.String("alert_type", string(alertType)),
+	)
 
 	e.notifySubscribers(ctx, deviceID, message)
 }
@@ -131,6 +168,13 @@ func (e *Engine) notifySubscribers(ctx context.Context, deviceID string, message
 		log.Printf("load subscribers: %v", err)
 		return
 	}
+
+	e.log.InfoContext(
+		ctx,
+		"sending alert notification",
+		slog.String("device_id", deviceID),
+		slog.Int("subscribers", len(chatIDs)),
+	)
 
 	for _, chatID := range chatIDs {
 		e.notifier.SendText(ctx, chatID, message)

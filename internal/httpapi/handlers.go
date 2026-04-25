@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"plants-monitor/internal/models"
 	"plants-monitor/internal/storage"
@@ -17,12 +18,14 @@ type AlertProcessor interface {
 type Handler struct {
 	store  *storage.Store
 	alerts AlertProcessor
+	log    *slog.Logger
 }
 
-func NewHandler(store *storage.Store, alerts AlertProcessor) *Handler {
+func NewHandler(store *storage.Store, alerts AlertProcessor, log *slog.Logger) *Handler {
 	return &Handler{
 		store:  store,
 		alerts: alerts,
+		log:    log,
 	}
 }
 
@@ -44,6 +47,13 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 	deviceToken := r.Header.Get("X-Device-Token")
 
 	if err := h.store.AuthenticateDevice(r.Context(), deviceID, deviceToken); err != nil {
+		h.log.WarnContext(
+			r.Context(),
+			"device authentication failed",
+			slog.String("device_id", deviceID),
+			slog.String("error", err.Error()),
+		)
+
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"error":   "unauthorized_device",
 			"details": err.Error(),
@@ -90,6 +100,16 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	h.log.InfoContext(
+		r.Context(),
+		"measurement stored",
+		slog.String("device_id", measurement.DeviceID),
+		slog.String("plant_name", measurement.PlantName),
+		slog.Int64("measurement_id", measurement.ID),
+		slog.Int("soil_percent", measurement.SoilPercent),
+		slog.Float64("light_voltage", measurement.LightVoltage),
+	)
 
 	if h.alerts != nil {
 		h.alerts.ProcessMeasurement(r.Context(), measurement)
@@ -181,6 +201,13 @@ func (h *Handler) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, response)
+
+	h.log.InfoContext(
+		r.Context(),
+		"device created",
+		slog.String("device_id", response.DeviceID),
+		slog.String("plant_name", response.PlantName),
+	)
 }
 
 func validateMeasurement(input models.CreateMeasurementRequest) error {

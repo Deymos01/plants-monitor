@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"plants-monitor/internal/storage"
 	"strconv"
 	"strings"
@@ -17,11 +18,13 @@ import (
 type Service struct {
 	store *storage.Store
 	bot   *tgbot.Bot
+	log   *slog.Logger
 }
 
-func NewService(store *storage.Store) *Service {
+func NewService(store *storage.Store, log *slog.Logger) *Service {
 	return &Service{
 		store: store,
+		log:   log,
 	}
 }
 
@@ -37,7 +40,7 @@ func (s *Service) Start(ctx context.Context, token string) error {
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/subscribe", tgbot.MatchTypePrefix, s.handleSubscribe)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/status", tgbot.MatchTypePrefix, s.handleStatus)
 
-	log.Println("telegram bot started")
+	s.log.Info("telegram bot started")
 
 	b.Start(ctx)
 
@@ -60,6 +63,12 @@ func (s *Service) handleStart(ctx context.Context, b *tgbot.Bot, update *models.
 		s.sendText(ctx, b, chatID, "Не удалось сохранить пользователя. Попробуй позже.")
 		return
 	}
+
+	s.log.InfoContext(
+		ctx,
+		"telegram user started bot",
+		slog.Int64("chat_id", chatID),
+	)
 
 	text := `Привет! Я бот мониторинга растений 🌱
 
@@ -111,6 +120,13 @@ func (s *Service) handleSubscribe(ctx context.Context, b *tgbot.Bot, update *mod
 	}
 
 	s.sendText(ctx, b, chatID, "Устройство привязано: "+deviceID)
+
+	s.log.InfoContext(
+		ctx,
+		"telegram user subscribed to device",
+		slog.Int64("chat_id", chatID),
+		slog.String("device_id", deviceID),
+	)
 }
 
 func (s *Service) handleStatus(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -156,6 +172,13 @@ func (s *Service) handleStatus(ctx context.Context, b *tgbot.Bot, update *models
 	text := formatStatusMessage(deviceID, measurement.PlantName, measurement.SoilPercent, measurement.SoilVoltage, measurement.LightVoltage)
 
 	s.sendText(ctx, b, chatID, text)
+
+	s.log.InfoContext(
+		ctx,
+		"telegram status sent",
+		slog.Int64("chat_id", chatID),
+		slog.String("device_id", deviceID),
+	)
 }
 
 func formatStatusMessage(
@@ -192,7 +215,12 @@ func (s *Service) sendText(ctx context.Context, b *tgbot.Bot, chatID int64, text
 	})
 
 	if err != nil {
-		log.Printf("send telegram message: %v", err)
+		s.log.ErrorContext(
+			ctx,
+			"send telegram message failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("error", err.Error()),
+		)
 	}
 }
 
