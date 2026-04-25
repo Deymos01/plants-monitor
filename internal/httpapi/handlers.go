@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,13 +10,19 @@ import (
 	"plants-monitor/internal/storage"
 )
 
-type Handler struct {
-	store *storage.Store
+type AlertProcessor interface {
+	ProcessMeasurement(ctx context.Context, m models.Measurement)
 }
 
-func NewHandler(store *storage.Store) *Handler {
+type Handler struct {
+	store  *storage.Store
+	alerts AlertProcessor
+}
+
+func NewHandler(store *storage.Store, alerts AlertProcessor) *Handler {
 	return &Handler{
-		store: store,
+		store:  store,
+		alerts: alerts,
 	}
 }
 
@@ -82,6 +89,10 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 			"details": err.Error(),
 		})
 		return
+	}
+
+	if h.alerts != nil {
+		h.alerts.ProcessMeasurement(r.Context(), measurement)
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{

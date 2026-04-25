@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"plants-monitor/internal/alerts"
 	"plants-monitor/internal/bot"
 	"plants-monitor/internal/config"
 	"plants-monitor/internal/httpapi"
@@ -30,7 +31,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	handler := httpapi.NewHandler(db)
+	botService := bot.NewService(db)
+
+	alertEngine := alerts.NewEngine(
+		db,
+		botService,
+		cfg.SoilLowPercent,
+		cfg.LightLowVoltage,
+	)
+
+	handler := httpapi.NewHandler(db, alertEngine)
 	router := httpapi.NewRouter(handler)
 
 	server := &http.Server{
@@ -49,8 +59,6 @@ func main() {
 			log.Fatalf("listen and serve: %v", err)
 		}
 	}()
-
-	botService := bot.NewService(db)
 
 	go func() {
 		if err := botService.Start(ctx, cfg.TelegramBotToken); err != nil {

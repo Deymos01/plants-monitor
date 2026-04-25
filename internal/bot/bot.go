@@ -16,6 +16,7 @@ import (
 
 type Service struct {
 	store *storage.Store
+	bot   *tgbot.Bot
 }
 
 func NewService(store *storage.Store) *Service {
@@ -29,6 +30,8 @@ func (s *Service) Start(ctx context.Context, token string) error {
 	if err != nil {
 		return fmt.Errorf("create telegram bot: %w", err)
 	}
+
+	s.bot = b
 
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypePrefix, s.handleStart)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/subscribe", tgbot.MatchTypePrefix, s.handleSubscribe)
@@ -191,4 +194,13 @@ func (s *Service) sendText(ctx context.Context, b *tgbot.Bot, chatID int64, text
 	if err != nil {
 		log.Printf("send telegram message: %v", err)
 	}
+}
+
+func (s *Service) SendText(ctx context.Context, chatID int64, text string) {
+	if s.bot == nil {
+		log.Printf("telegram bot is not initialized")
+		return
+	}
+
+	s.sendText(ctx, s.bot, chatID, text)
 }
