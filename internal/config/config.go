@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	AppEnv           string
 	HTTPAddr         string
 	DBPath           string
 	TelegramBotToken string
@@ -21,6 +22,8 @@ func Load() (Config, error) {
 	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
 		return Config{}, fmt.Errorf("load .env: %w", err)
 	}
+
+	appEnv := optionalStringEnv("APP_ENV", "dev")
 
 	httpAddr, err := requiredEnv("HTTP_ADDR")
 	if err != nil {
@@ -48,6 +51,7 @@ func Load() (Config, error) {
 	}
 
 	return Config{
+		AppEnv:           appEnv,
 		HTTPAddr:         httpAddr,
 		DBPath:           dbPath,
 		TelegramBotToken: telegramBotToken,
@@ -91,4 +95,13 @@ func optionalFloatEnv(key string, defaultValue float64) (float64, error) {
 	}
 
 	return parsed, nil
+}
+
+func optionalStringEnv(key string, defaultValue string) string {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return defaultValue
+	}
+
+	return value
 }
