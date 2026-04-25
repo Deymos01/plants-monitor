@@ -2,3 +2,4 @@
 /data/
 
 .env
+plants_monitor/secrets.h
