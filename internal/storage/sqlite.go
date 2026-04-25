@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"plants-monitor/internal/models"
 
 	_ "modernc.org/sqlite"
 )
@@ -67,4 +68,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Store) InsertMeasurement(ctx context.Context, input models.CreateMeasurementRequest) (models.Measurement, error) {
+	return models.Measurement{}, nil
 }
