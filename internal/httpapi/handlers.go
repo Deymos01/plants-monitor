@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -65,6 +66,44 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":          true,
+		"measurement": measurement,
+	})
+}
+
+func (h *Handler) LatestMeasurement(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"error": "method_not_allowed",
+		})
+		return
+	}
+
+	deviceID := r.URL.Query().Get("device_id")
+	if deviceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "device_id_required",
+		})
+		return
+	}
+
+	measurement, err := h.store.LatestMeasurement(r.Context(), deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "measurement_not_found",
+		})
+		return
+	}
+
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "latest_failed",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"measurement": measurement,
 	})

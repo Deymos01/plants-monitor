@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -122,6 +123,56 @@ func (s *Store) InsertMeasurement(ctx context.Context, input models.CreateMeasur
 
 	if err != nil {
 		return models.Measurement{}, fmt.Errorf("insert measurement: %w", err)
+	}
+
+	t, err := parseSQLiteTime(createdAt)
+	if err != nil {
+		return models.Measurement{}, err
+	}
+
+	m.CreatedAt = t
+	return m, nil
+}
+
+func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.Measurement, error) {
+	query := `
+		SELECT
+			id,
+			device_id,
+			soil_raw,
+			soil_voltage,
+			soil_percent,
+			light_raw,
+			light_voltage,
+			battery_voltage,
+			created_at
+		FROM measurements
+		WHERE device_id = ?
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1;
+`
+
+	var m models.Measurement
+	var createdAt string
+
+	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(
+		&m.ID,
+		&m.DeviceID,
+		&m.SoilRaw,
+		&m.SoilVoltage,
+		&m.SoilPercent,
+		&m.LightRaw,
+		&m.LightVoltage,
+		&m.BatteryVoltage,
+		&createdAt,
+	)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.Measurement{}, sql.ErrNoRows
+	}
+
+	if err != nil {
+		return models.Measurement{}, fmt.Errorf("latest measurement: %w", err)
 	}
 
 	t, err := parseSQLiteTime(createdAt)
