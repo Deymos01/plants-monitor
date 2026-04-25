@@ -15,7 +15,10 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
 
 	db, err := storage.Open(cfg.DBPath)
 	if err != nil {
