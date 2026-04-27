@@ -12,7 +12,9 @@ import (
 	"strings"
 
 	tgbot "github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
+	tgmodels "github.com/go-telegram/bot/models"
+
+	appmodels "plants-monitor/internal/models"
 )
 
 type Service struct {
@@ -37,6 +39,7 @@ func (s *Service) Start(ctx context.Context, token string) error {
 	s.bot = b
 
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypePrefix, s.handleStart)
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/register", tgbot.MatchTypePrefix, s.handleRegister)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/subscribe", tgbot.MatchTypePrefix, s.handleSubscribe)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/status", tgbot.MatchTypePrefix, s.handleStatus)
 
@@ -47,7 +50,7 @@ func (s *Service) Start(ctx context.Context, token string) error {
 	return nil
 }
 
-func (s *Service) handleStart(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+func (s *Service) handleStart(ctx context.Context, b *tgbot.Bot, update *tgmodels.Update) {
 	if update.Message == nil || update.Message.From == nil {
 		return
 	}
@@ -74,8 +77,11 @@ func (s *Service) handleStart(ctx context.Context, b *tgbot.Bot, update *models.
 
 Доступные команды:
 
+/register <device_id> <название растения>
+Зарегистрировать новое устройство и получить device token.
+
 /subscribe <device_id>
-Привязать устройство к этому чату.
+Привязать уже существующее устройство к этому чату.
 
 /status
 Показать последнее измерение привязанного устройства.
@@ -86,7 +92,84 @@ func (s *Service) handleStart(ctx context.Context, b *tgbot.Bot, update *models.
 	s.sendText(ctx, b, chatID, text)
 }
 
-func (s *Service) handleSubscribe(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+func (s *Service) handleRegister(ctx context.Context, b *tgbot.Bot, update *tgmodels.Update) {
+	if update.Message == nil {
+		return
+	}
+
+	chatID := update.Message.Chat.ID
+	args := strings.Fields(update.Message.Text)
+
+	if len(args) < 3 {
+		s.sendText(ctx, b, chatID, "Использование: /register <device_id> <название растения>\n\nПример:\n/register plant-a4cf12345678 Фиалки")
+		return
+	}
+
+	deviceID := args[1]
+	plantName := strings.Join(args[2:], " ")
+
+	if err := s.store.UpsertTelegramUser(ctx, chatID); err != nil {
+		s.log.ErrorContext(
+			ctx,
+			"upsert telegram user failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("error", err.Error()),
+		)
+		s.sendText(ctx, b, chatID, "Не удалось сохранить пользователя. Попробуй позже.")
+		return
+	}
+
+	response, err := s.store.CreateDevice(ctx, appmodels.CreateDeviceRequest{
+		DeviceID:  deviceID,
+		PlantName: plantName,
+	})
+	if err != nil {
+		s.log.ErrorContext(
+			ctx,
+			"create device from telegram failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("device_id", deviceID),
+			slog.String("plant_name", plantName),
+			slog.String("error", err.Error()),
+		)
+
+		s.sendText(ctx, b, chatID, "Не удалось зарегистрировать устройство. Возможно, оно уже существует.")
+		return
+	}
+
+	if err := s.store.SubscribeDevice(ctx, chatID, deviceID); err != nil {
+		s.log.ErrorContext(
+			ctx,
+			"subscribe device after telegram register failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("device_id", deviceID),
+			slog.String("error", err.Error()),
+		)
+
+		s.sendText(ctx, b, chatID, "Устройство создано, но не удалось подписать чат на уведомления.")
+		return
+	}
+
+	s.log.InfoContext(
+		ctx,
+		"device registered from telegram",
+		slog.Int64("chat_id", chatID),
+		slog.String("device_id", deviceID),
+		slog.String("plant_name", plantName),
+	)
+
+	text := fmt.Sprintf(
+		"✅ Устройство зарегистрировано\n\nРастение: %s\nDevice ID: %s\n\nDevice token:\n%s\n\nСкопируй этот токен в `plants_monitor/secrets.h`:\n\nconst char* DEVICE_TOKEN = \"%s\";\n\nЭтот токен показывается только один раз. Не пересылай его другим людям.",
+		response.PlantName,
+		response.DeviceID,
+		response.DeviceToken,
+		response.DeviceToken,
+	)
+
+	s.sendText(ctx, b, chatID, text)
+}
+
+func (s *Service) handleSubscribe(ctx context.Context, b *tgbot.Bot, update *tgmodels.Update) {
 	if update.Message == nil {
 		return
 	}
@@ -129,7 +212,7 @@ func (s *Service) handleSubscribe(ctx context.Context, b *tgbot.Bot, update *mod
 	)
 }
 
-func (s *Service) handleStatus(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+func (s *Service) handleStatus(ctx context.Context, b *tgbot.Bot, update *tgmodels.Update) {
 	if update.Message == nil {
 		return
 	}

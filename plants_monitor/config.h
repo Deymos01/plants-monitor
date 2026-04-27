@@ -22,6 +22,7 @@ const int SOIL_WET_RAW = 2200;
 // Deep sleep
 // =====================
 // 2 h = 7200 s
-const uint64_t DEFAULT_SLEEP_SECONDS = 7200ULL;
+// const uint64_t DEFAULT_SLEEP_SECONDS = 7200ULL;
+const uint64_t DEFAULT_SLEEP_SECONDS = 10ULL;
 
 #endif
