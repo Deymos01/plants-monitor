@@ -12,6 +12,9 @@ Plant Monitor — это IoT-проект для мониторинга сост
 - авторизация устройства через `device_id` и `device_token`;
 - хранение измерений в SQLite;
 - получение последнего измерения устройства через API;
+- регистрация и подписка устройства в Telegram-боте;
+- просмотр состояния растения через Telegram-бота;
+- автоматические уведомления в Telegram при недостатке влаги или света.
 
 ## Принцип работы
 
@@ -50,16 +53,26 @@ X-Device-Token: ...
 Создайте файл `.env` в корне проекта и добавьте следующие переменные:
 
 ```env
+APP_ENV=development
 HTTP_ADDR=0.0.0.0:8080
 DB_PATH=data/plant_monitor.db
+
+TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+
+SOIL_LOW_PERCENT=30
+LIGHT_LOW_VOLTAGE=0.8
 ```
 
 Описание переменных:
 
-| Переменная  | Назначение                                    |
-|-------------|-----------------------------------------------|
+| Переменная | Назначение |
+|---|---|
+| `APP_ENV` | Режим запуска приложения. Например, `development` или `production` |
 | `HTTP_ADDR` | Адрес и порт, на котором будет запущен сервер |
-| `DB_PATH`   | Путь к SQLite базе данных                     |
+| `DB_PATH` | Путь к SQLite базе данных |
+| `TELEGRAM_BOT_TOKEN` | Токен Telegram-бота, полученный у BotFather |
+| `SOIL_LOW_PERCENT` | Минимально допустимая влажность почвы в процентах |
+| `LIGHT_LOW_VOLTAGE` | Минимально допустимое напряжение с фоторезистора |
 
 ### 2. Запуск сервера
 
@@ -87,32 +100,45 @@ go run ./cmd/server
 Device ID: plant-a4cf12345678
 ```
 
-### 2. Создать устройство на сервере
+Скопируйте этот идентификатор.
 
-Отправьте POST-запрос на сервер с данным `device_id` для его регистрации:
+### 2. Написать боту /start
 
+Откройте Telegram-бота и отправьте команду:
 ```bash
-curl -X POST http://localhost:8080/api/v1/devices \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_id": "plant-a4cf12345678",
-    "plant_name": "Фиалки"
-  }'
+/start
 ```
 
-Сервер вернёт `device_token`:
+### 3. Зарегистрировать устройство
 
-```json
-{
-  "ok": true,
-  "device_id": "plant-a4cf12345678",
-  "plant_name": "Фиалки",
-  "device_token": "pmon_..."
-}
+Отправьте боту команду:
+```bash
+/register <device_id> <название растения>
 ```
 
-Необходимо сохранить `device_token`. Он показывается только при создании устройства один раз и пригодится на следующем
-шаге!
+Например:
+```bash
+/register plant-a4cf12345678 Фиалки
+```
+
+Бот создаст устройство на сервере, привяжет его к текущему Telegram-чату и вернёт device_token.
+
+Пример ответа:
+
+```
+✅ Устройство зарегистрировано
+
+Растение: Фиалки
+Device ID: plant-a4cf12345678
+
+Device token:
+pmon_...
+
+Скопируй этот токен в plants_monitor/secrets.h:
+const char* DEVICE_TOKEN = "pmon_...";
+```
+
+Не пересылайте `device_token` другим людям. Этот токен используется ESP32 для авторизации при отправке измерений на сервер.
 
 ## Настройка ESP32
 
@@ -178,51 +204,4 @@ ESP32 отправляет JSON:
 ```http
 X-Device-ID: plant-a4cf12345678
 X-Device-Token: pmon_...
-```
-
-## API
-
-### Создать устройство
-
-```http request
-POST /api/v1/devices
-```
-
-Пример:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/devices \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_id": "plant-a4cf12345678",
-    "plant_name": "Фиалки"
-  }'
-```
-
-### Отправить измерение
-
-```http request
-POST /api/v1/measurements
-```
-
-Пример:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/measurements \
-  -H "Content-Type: application/json" \
-  -H "X-Device-ID: plant-a4cf12345678" \
-  -H "X-Device-Token: pmon_YOUR_DEVICE_TOKEN" \
-  -d '{
-    "soil_raw": 1200,
-    "soil_voltage": 1.245,
-    "soil_percent": 55,
-    "light_raw": 1800,
-    "light_voltage": 1.620
-  }'
-```
-
-### Получить последнее измерение устройства
-
-```http request
-GET /api/v1/measurements/latest?device_id=plant-a4cf12345678
 ```
