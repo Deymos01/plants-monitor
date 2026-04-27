@@ -133,9 +133,6 @@ Device ID: plant-a4cf12345678
 
 Device token:
 pmon_...
-
-Скопируй этот токен в plants_monitor/secrets.h:
-const char* DEVICE_TOKEN = "pmon_...";
 ```
 
 Не пересылайте `device_token` другим людям. Этот токен используется ESP32 для авторизации при отправке измерений на сервер.

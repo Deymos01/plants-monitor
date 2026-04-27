@@ -101,7 +101,10 @@ func (s *Service) handleRegister(ctx context.Context, b *tgbot.Bot, update *tgmo
 	args := strings.Fields(update.Message.Text)
 
 	if len(args) < 3 {
-		s.sendText(ctx, b, chatID, "Использование: /register <device_id> <название растения>\n\nПример:\n/register plant-a4cf12345678 Фиалки")
+		s.sendText(ctx, b, chatID, `Использование: /register <device_id> <название растения>
+
+Пример:
+/register plant-a4cf12345678 Фиалки`)
 		return
 	}
 
@@ -159,14 +162,21 @@ func (s *Service) handleRegister(ctx context.Context, b *tgbot.Bot, update *tgmo
 	)
 
 	text := fmt.Sprintf(
-		"✅ Устройство зарегистрировано\n\nРастение: %s\nDevice ID: %s\n\nDevice token:\n%s\n\nСкопируй этот токен в `plants_monitor/secrets.h`:\n\nconst char* DEVICE_TOKEN = \"%s\";\n\nЭтот токен показывается только один раз. Не пересылай его другим людям.",
+		`✅ Устройство зарегистрировано
+
+Растение: %s
+Device ID: %s
+
+Device token:
+<code>%s</code>
+
+Этот токен показывается только один раз. Не пересылай его другим людям.`,
 		response.PlantName,
 		response.DeviceID,
 		response.DeviceToken,
-		response.DeviceToken,
 	)
 
-	s.sendText(ctx, b, chatID, text)
+	s.sendHTML(ctx, b, chatID, text)
 }
 
 func (s *Service) handleSubscribe(ctx context.Context, b *tgbot.Bot, update *tgmodels.Update) {
@@ -301,6 +311,23 @@ func (s *Service) sendText(ctx context.Context, b *tgbot.Bot, chatID int64, text
 		s.log.ErrorContext(
 			ctx,
 			"send telegram message failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+func (s *Service) sendHTML(ctx context.Context, b *tgbot.Bot, chatID int64, text string) {
+	_, err := b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: tgmodels.ParseModeHTML,
+	})
+
+	if err != nil {
+		s.log.ErrorContext(
+			ctx,
+			"send telegram html message failed",
 			slog.Int64("chat_id", chatID),
 			slog.String("error", err.Error()),
 		)
