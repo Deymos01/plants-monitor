@@ -400,6 +400,31 @@ func (s *Store) LatestSubscribedDeviceID(ctx context.Context, chatID int64) (str
 	return deviceID, nil
 }
 
+func (s *Store) IsSubscribed(ctx context.Context, chatID int64, publicDeviceID string) (bool, error) {
+	query := `
+		SELECT 1
+		FROM device_subscriptions ds
+			JOIN telegram_users tu ON tu.id = ds.telegram_user_id
+			JOIN devices d ON d.id = ds.device_id
+		WHERE tu.chat_id = ?
+		  AND d.device_id = ?
+		LIMIT 1;
+`
+
+	var exists int
+
+	err := s.db.QueryRowContext(ctx, query, chatID, publicDeviceID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("check device subscription: %w", err)
+	}
+
+	return true, nil
+}
+
 func (s *Store) DeviceExists(ctx context.Context, deviceID string) (bool, error) {
 	query := `
 		SELECT 1

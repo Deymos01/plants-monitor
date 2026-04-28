@@ -251,17 +251,49 @@ func (s *Service) handleStatus(ctx context.Context, b *tgbot.Bot, update *tgmode
 
 	if len(args) >= 2 {
 		deviceID = args[1]
+
+		subscribed, err := s.store.IsSubscribed(ctx, chatID, deviceID)
+		if err != nil {
+			s.log.ErrorContext(
+				ctx,
+				"check device subscription failed",
+				slog.Int64("chat_id", chatID),
+				slog.String("device_id", deviceID),
+				slog.String("error", err.Error()),
+			)
+
+			s.sendText(ctx, b, chatID, "Не удалось проверить доступ к устройству. Попробуй позже.")
+			return
+		}
+
+		if !subscribed {
+			s.log.WarnContext(
+				ctx,
+				"telegram user tried to access unsubscribed device",
+				slog.Int64("chat_id", chatID),
+				slog.String("device_id", deviceID),
+			)
+
+			s.sendText(ctx, b, chatID, "Этот чат не подписан на устройство: "+deviceID)
+			return
+		}
 	} else {
 		var err error
 
 		deviceID, err = s.store.LatestSubscribedDeviceID(ctx, chatID)
 		if errors.Is(err, sql.ErrNoRows) {
-			s.sendText(ctx, b, chatID, "Сначала привяжи устройство: /subscribe <device_id>")
+			s.sendText(ctx, b, chatID, "Сначала зарегистрируй устройство:\\n/register <device_id> <название растения>")
 			return
 		}
 
 		if err != nil {
-			log.Printf("latest subscribed device id: %v", err)
+			s.log.ErrorContext(
+				ctx,
+				"latest subscribed device id failed",
+				slog.Int64("chat_id", chatID),
+				slog.String("error", err.Error()),
+			)
+
 			s.sendText(ctx, b, chatID, "Не удалось получить привязанное устройство.")
 			return
 		}
@@ -274,7 +306,14 @@ func (s *Service) handleStatus(ctx context.Context, b *tgbot.Bot, update *tgmode
 	}
 
 	if err != nil {
-		log.Printf("latest measurement: %v", err)
+		s.log.ErrorContext(
+			ctx,
+			"latest measurement failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("device_id", deviceID),
+			slog.String("error", err.Error()),
+		)
+
 		s.sendText(ctx, b, chatID, "Не удалось получить последнее измерение.")
 		return
 	}
