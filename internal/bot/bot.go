@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"log/slog"
 	"plants-monitor/internal/storage"
@@ -51,7 +52,7 @@ func (s *Service) Start(ctx context.Context, token string) error {
 }
 
 func (s *Service) handleStart(ctx context.Context, b *tgbot.Bot, update *tgmodels.Update) {
-	if update.Message == nil || update.Message.From == nil {
+	if update.Message == nil {
 		return
 	}
 
@@ -62,7 +63,12 @@ func (s *Service) handleStart(ctx context.Context, b *tgbot.Bot, update *tgmodel
 		chatID,
 	)
 	if err != nil {
-		log.Printf("upsert telegram user: %v", err)
+		s.log.ErrorContext(
+			ctx,
+			"upsert telegram user failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("error", err.Error()),
+		)
 		s.sendText(ctx, b, chatID, "Не удалось сохранить пользователя. Попробуй позже.")
 		return
 	}
@@ -162,18 +168,18 @@ func (s *Service) handleRegister(ctx context.Context, b *tgbot.Bot, update *tgmo
 	)
 
 	text := fmt.Sprintf(
-		`✅ Устройство зарегистрировано
+		`✅ <b>Устройство зарегистрировано</b>
 
-Растение: %s
-Device ID: %s
+<b>Растение:</b> %s
+<b>Device ID:</b> <code>%s</code>
 
-Device token:
+<b>Device token:</b>
 <code>%s</code>
 
 Этот токен показывается только один раз. Не пересылай его другим людям.`,
-		response.PlantName,
-		response.DeviceID,
-		response.DeviceToken,
+		html.EscapeString(response.PlantName),
+		html.EscapeString(response.DeviceID),
+		html.EscapeString(response.DeviceToken),
 	)
 
 	s.sendHTML(ctx, b, chatID, text)
@@ -193,6 +199,17 @@ func (s *Service) handleSubscribe(ctx context.Context, b *tgbot.Bot, update *tgm
 	}
 
 	deviceID := args[1]
+
+	if err := s.store.UpsertTelegramUser(ctx, chatID); err != nil {
+		s.log.ErrorContext(
+			ctx,
+			"upsert telegram user failed",
+			slog.Int64("chat_id", chatID),
+			slog.String("error", err.Error()),
+		)
+		s.sendText(ctx, b, chatID, "Не удалось сохранить пользователя. Попробуй позже.")
+		return
+	}
 
 	exists, err := s.store.DeviceExists(ctx, deviceID)
 	if err != nil {
@@ -336,7 +353,7 @@ func (s *Service) sendHTML(ctx context.Context, b *tgbot.Bot, chatID int64, text
 
 func (s *Service) SendText(ctx context.Context, chatID int64, text string) {
 	if s.bot == nil {
-		log.Printf("telegram bot is not initialized")
+		s.log.WarnContext(ctx, "telegram bot is not initialized")
 		return
 	}
 
