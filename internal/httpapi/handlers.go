@@ -117,7 +117,7 @@ func (h *Handler) CreateMeasurement(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ok":                 true,
-		"measurement":        measurement,
+		"measurement_id":     measurement.ID,
 		"next_sleep_seconds": 7200,
 	})
 }

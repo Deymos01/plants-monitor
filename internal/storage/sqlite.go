@@ -33,6 +33,11 @@ func Open(dbPath string) (*Store, error) {
 
 	db.SetMaxOpenConns(1)
 
+	if _, err := db.Exec("PRAGMA foreign_keys = ON;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
+
 	store := &Store{db: db}
 
 	if err := store.migrate(context.Background()); err != nil {
@@ -45,81 +50,6 @@ func Open(dbPath string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
-}
-
-func (s *Store) migrate(ctx context.Context) error {
-	query := `
-		CREATE TABLE IF NOT EXISTS devices (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			device_id TEXT NOT NULL UNIQUE,
-			token_hash TEXT NOT NULL,
-			plant_name TEXT NOT NULL DEFAULT '',
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			last_seen_at DATETIME NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS measurements (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			device_id TEXT NOT NULL,
-		
-			soil_raw REAL NOT NULL,
-			soil_voltage REAL NOT NULL,
-			soil_percent INTEGER NOT NULL,
-		
-			light_raw REAL NOT NULL,
-			light_voltage REAL NOT NULL,
-		
-			battery_voltage REAL NULL,
-		
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-			FOREIGN KEY (device_id) REFERENCES devices(device_id)
-		);
-		
-		CREATE INDEX IF NOT EXISTS idx_measurements_device_created
-		ON measurements(device_id, created_at DESC);
-
-		CREATE TABLE IF NOT EXISTS telegram_users (
-			chat_id INTEGER PRIMARY KEY,
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS device_subscriptions (
-			chat_id INTEGER NOT NULL,
-			device_id TEXT NOT NULL,
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		
-			PRIMARY KEY (chat_id, device_id),
-		
-			FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id),
-			FOREIGN KEY (device_id) REFERENCES devices(device_id)
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_device_subscriptions_chat
-		ON device_subscriptions(chat_id);
-
-		CREATE TABLE IF NOT EXISTS alerts (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			device_id TEXT NOT NULL,
-			type TEXT NOT NULL,
-			status TEXT NOT NULL,
-			message TEXT NOT NULL,
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			resolved_at DATETIME NULL,
-		
-			FOREIGN KEY (device_id) REFERENCES devices(device_id)
-		);
-		
-		CREATE INDEX IF NOT EXISTS idx_alerts_device_type_status
-		ON alerts(device_id, type, status);
-`
-
-	if _, err := s.db.ExecContext(ctx, query); err != nil {
-		return fmt.Errorf("migrate sqlite: %w", err)
-	}
-
-	return nil
 }
 
 func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input models.CreateMeasurementRequest) (models.Measurement, error) {
