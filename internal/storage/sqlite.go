@@ -52,7 +52,51 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input models.CreateMeasurementRequest) (models.Measurement, error) {
+func (s *Store) DeviceInternalID(ctx context.Context, publicDeviceID string) (int64, error) {
+	query := `
+		SELECT id
+		FROM devices
+		WHERE device_id = ?
+		LIMIT 1;
+`
+
+	var id int64
+
+	err := s.db.QueryRowContext(ctx, query, publicDeviceID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, sql.ErrNoRows
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("device internal id: %w", err)
+	}
+
+	return id, nil
+}
+
+func (s *Store) TelegramUserID(ctx context.Context, chatID int64) (int64, error) {
+	query := `
+		SELECT id
+		FROM telegram_users
+		WHERE chat_id = ?
+		LIMIT 1;
+`
+
+	var id int64
+
+	err := s.db.QueryRowContext(ctx, query, chatID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, sql.ErrNoRows
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("telegram user id: %w", err)
+	}
+
+	return id, nil
+}
+
+func (s *Store) InsertMeasurement(ctx context.Context, publicDeviceID string, input models.CreateMeasurementRequest) (models.Measurement, error) {
 	query := `
 		INSERT INTO measurements (
 			device_id,
@@ -63,7 +107,9 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 			light_voltage,
 			battery_voltage
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		SELECT d.id, ?, ?,	?, ?, ?, ?
+		FROM devices d
+		WHERE d.device_id = ?
 		RETURNING id;
 `
 
@@ -72,14 +118,18 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 	err := s.db.QueryRowContext(
 		ctx,
 		query,
-		deviceID,
 		input.SoilRaw,
 		input.SoilVoltage,
 		input.SoilPercent,
 		input.LightRaw,
 		input.LightVoltage,
 		input.BatteryVoltage,
+		publicDeviceID,
 	).Scan(&measurementID)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.Measurement{}, sql.ErrNoRows
+	}
 
 	if err != nil {
 		return models.Measurement{}, fmt.Errorf("insert measurement: %w", err)
@@ -91,13 +141,14 @@ func (s *Store) InsertMeasurement(ctx context.Context, deviceID string, input mo
 	}
 
 	return measurement, nil
+
 }
 
 func (s *Store) MeasurementByID(ctx context.Context, measurementID int64) (models.Measurement, error) {
 	query := `
 		SELECT
 			m.id,
-			m.device_id,
+			d.device_id,
 			d.plant_name,
 			m.soil_raw,
 			m.soil_voltage,
@@ -107,7 +158,7 @@ func (s *Store) MeasurementByID(ctx context.Context, measurementID int64) (model
 			m.battery_voltage,
 			m.created_at
 		FROM measurements m
-		JOIN devices d ON d.device_id = m.device_id
+		JOIN devices d ON d.id = m.device_id
 		WHERE m.id = ?
 		LIMIT 1;
 `
@@ -145,11 +196,11 @@ func (s *Store) MeasurementByID(ctx context.Context, measurementID int64) (model
 	return m, nil
 }
 
-func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.Measurement, error) {
+func (s *Store) LatestMeasurement(ctx context.Context, publicDeviceID string) (models.Measurement, error) {
 	query := `
 		SELECT
 			m.id,
-			m.device_id,
+			d.device_id,
 			d.plant_name,
 			m.soil_raw,
 			m.soil_voltage,
@@ -159,16 +210,16 @@ func (s *Store) LatestMeasurement(ctx context.Context, deviceID string) (models.
 			m.battery_voltage,
 			m.created_at
 		FROM measurements m
-		JOIN devices d ON d.device_id = m.device_id
-		WHERE m.device_id = ?
+		JOIN devices d ON d.id = m.device_id
+		WHERE d.device_id = ?
 		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT 1;
-`
+	`
 
 	var m models.Measurement
 	var createdAt string
 
-	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(
+	err := s.db.QueryRowContext(ctx, query, publicDeviceID).Scan(
 		&m.ID,
 		&m.DeviceID,
 		&m.PlantName,
@@ -284,9 +335,7 @@ func (s *Store) TouchDevice(ctx context.Context, deviceID string) error {
 
 func (s *Store) UpsertTelegramUser(ctx context.Context, chatID int64) error {
 	query := `
-		INSERT INTO telegram_users (
-			chat_id
-		)
+		INSERT INTO telegram_users (chat_id)
 		VALUES (?)
 		ON CONFLICT(chat_id) DO UPDATE SET
 			updated_at = CURRENT_TIMESTAMP;
@@ -299,17 +348,27 @@ func (s *Store) UpsertTelegramUser(ctx context.Context, chatID int64) error {
 	return nil
 }
 
-func (s *Store) SubscribeDevice(ctx context.Context, chatID int64, deviceID string) error {
+func (s *Store) SubscribeDevice(ctx context.Context, chatID int64, publicDeviceID string) error {
+	telegramUserID, err := s.TelegramUserID(ctx, chatID)
+	if err != nil {
+		return fmt.Errorf("resolve telegram user id: %w", err)
+	}
+
+	deviceID, err := s.DeviceInternalID(ctx, publicDeviceID)
+	if err != nil {
+		return fmt.Errorf("resolve device id: %w", err)
+	}
+
 	query := `
 		INSERT INTO device_subscriptions (
-			chat_id,
+			telegram_user_id,
 			device_id
 		)
 		VALUES (?, ?)
-		ON CONFLICT(chat_id, device_id) DO NOTHING;
+		ON CONFLICT(telegram_user_id, device_id) DO NOTHING;
 `
 
-	if _, err := s.db.ExecContext(ctx, query, chatID, deviceID); err != nil {
+	if _, err := s.db.ExecContext(ctx, query, telegramUserID, deviceID); err != nil {
 		return fmt.Errorf("subscribe device: %w", err)
 	}
 
@@ -318,10 +377,12 @@ func (s *Store) SubscribeDevice(ctx context.Context, chatID int64, deviceID stri
 
 func (s *Store) LatestSubscribedDeviceID(ctx context.Context, chatID int64) (string, error) {
 	query := `
-		SELECT device_id
-		FROM device_subscriptions
-		WHERE chat_id = ?
-		ORDER BY created_at DESC
+		SELECT d.device_id
+		FROM device_subscriptions ds
+			JOIN telegram_users tu ON tu.id = ds.telegram_user_id
+			JOIN devices d ON d.id = ds.device_id
+		WHERE tu.chat_id = ?
+		ORDER BY ds.created_at DESC
 		LIMIT 1;
 `
 
@@ -361,13 +422,37 @@ func (s *Store) DeviceExists(ctx context.Context, deviceID string) (bool, error)
 	return true, nil
 }
 
-func (s *Store) ActiveAlertExists(ctx context.Context, deviceID string, alertType models.AlertType) (bool, error) {
+func (s *Store) AlertTypeID(ctx context.Context, alertType models.AlertType) (int64, error) {
+	query := `
+		SELECT id
+		FROM alert_types
+		WHERE type = ?
+		LIMIT 1;
+	`
+
+	var id int64
+
+	err := s.db.QueryRowContext(ctx, query, string(alertType)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, sql.ErrNoRows
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("alert type id: %w", err)
+	}
+
+	return id, nil
+}
+
+func (s *Store) ActiveAlertExists(ctx context.Context, publicDeviceID string, alertType models.AlertType) (bool, error) {
 	query := `
 		SELECT 1
-		FROM alerts
-		WHERE device_id = ?
-		  AND type = ?
-		  AND status = ?
+		FROM alerts a
+			JOIN devices d ON d.id = a.device_id
+			JOIN alert_types at ON at.id = a.type_id
+		WHERE d.device_id = ?
+		  AND at.type = ?
+		  AND a.status = ?
 		LIMIT 1;
 `
 
@@ -376,7 +461,7 @@ func (s *Store) ActiveAlertExists(ctx context.Context, deviceID string, alertTyp
 	err := s.db.QueryRowContext(
 		ctx,
 		query,
-		deviceID,
+		publicDeviceID,
 		string(alertType),
 		string(models.AlertStatusActive),
 	).Scan(&exists)
@@ -392,22 +477,32 @@ func (s *Store) ActiveAlertExists(ctx context.Context, deviceID string, alertTyp
 	return true, nil
 }
 
-func (s *Store) CreateAlert(ctx context.Context, deviceID string, alertType models.AlertType, message string) error {
+func (s *Store) CreateAlert(ctx context.Context, publicDeviceID string, alertType models.AlertType, message string) error {
+	deviceID, err := s.DeviceInternalID(ctx, publicDeviceID)
+	if err != nil {
+		return fmt.Errorf("resolve device id: %w", err)
+	}
+
+	alertTypeID, err := s.AlertTypeID(ctx, alertType)
+	if err != nil {
+		return fmt.Errorf("resolve alert type id: %w", err)
+	}
+
 	query := `
 		INSERT INTO alerts (
 			device_id,
-			type,
+			type_id,
 			status,
 			message
 		)
 		VALUES (?, ?, ?, ?);
-`
+	`
 
 	if _, err := s.db.ExecContext(
 		ctx,
 		query,
 		deviceID,
-		string(alertType),
+		alertTypeID,
 		string(models.AlertStatusActive),
 		message,
 	); err != nil {
@@ -417,21 +512,27 @@ func (s *Store) CreateAlert(ctx context.Context, deviceID string, alertType mode
 	return nil
 }
 
-func (s *Store) ResolveAlert(ctx context.Context, deviceID string, alertType models.AlertType) (bool, error) {
+func (s *Store) ResolveAlert(ctx context.Context, publicDeviceID string, alertType models.AlertType) (bool, error) {
 	query := `
 		UPDATE alerts
 		SET status = ?,
 			resolved_at = CURRENT_TIMESTAMP
-		WHERE device_id = ?
-		  AND type = ?
-		  AND status = ?;
-`
+		WHERE id IN (
+			SELECT a.id
+			FROM alerts a
+				JOIN devices d ON d.id = a.device_id
+				JOIN alert_types at ON at.id = a.type_id
+			WHERE d.device_id = ?
+			  AND at.type = ?
+			  AND a.status = ?
+		);
+	`
 
 	result, err := s.db.ExecContext(
 		ctx,
 		query,
 		string(models.AlertStatusResolved),
-		deviceID,
+		publicDeviceID,
 		string(alertType),
 		string(models.AlertStatusActive),
 	)
@@ -447,14 +548,16 @@ func (s *Store) ResolveAlert(ctx context.Context, deviceID string, alertType mod
 	return affected > 0, nil
 }
 
-func (s *Store) DeviceSubscriberChatIDs(ctx context.Context, deviceID string) ([]int64, error) {
+func (s *Store) DeviceSubscriberChatIDs(ctx context.Context, publicDeviceID string) ([]int64, error) {
 	query := `
-		SELECT chat_id
-		FROM device_subscriptions
-		WHERE device_id = ?;
+		SELECT tu.chat_id
+		FROM device_subscriptions ds
+			JOIN telegram_users tu ON tu.id = ds.telegram_user_id
+			JOIN devices d ON d.id = ds.device_id
+		WHERE d.device_id = ?;
 `
 
-	rows, err := s.db.QueryContext(ctx, query, deviceID)
+	rows, err := s.db.QueryContext(ctx, query, publicDeviceID)
 	if err != nil {
 		return nil, fmt.Errorf("query device subscribers: %w", err)
 	}
